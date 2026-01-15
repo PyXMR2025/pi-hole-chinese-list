@@ -1,96 +1,68 @@
 name: Update easylist.hosts daily
 
+# 触发条件：每天 UTC 0 点执行，也支持手动触发
 on:
   schedule:
     - cron: '0 0 * * *'  # UTC 0点，对应北京时间 8 点
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:  # 允许手动触发，方便测试
 
-# 设置最小化权限，遵循权限最小化原则
+# 设置工作流权限
 permissions:
-  contents: write
+  contents: write  # 授予写入仓库内容的权限
 
 jobs:
   update-hosts:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # 使用 Ubuntu 最新版运行环境
     steps:
-      # 步骤1：检出代码（使用持久化引用，避免过期）
-      - name: Checkout repository
+      # 步骤1：检出 master 分支的代码
+      - name: Checkout master branch
         uses: actions/checkout@v4
         with:
-          ref: master
-          token: ${{ secrets.GITHUB_TOKEN }} # 显式使用GITHUB_TOKEN，确保推送权限
+          ref: master  # 指定检出 master 分支
 
-      # 步骤2：缓存已下载的列表文件，避免重复下载[1,7](@ref)
-      - name: Cache Easylist Files
-        uses: actions/cache@v4
-        id: cache-easylist
-        with:
-          path: ./temp_downloads
-          # 根据文件来源的“最后修改时间”或ETag生成key是理想方式，但此处简化使用日期
-          # 确保缓存仅在当天有效，避免使用过时数据
-          key: easylist-${{ hashFiles('**/*.txt') || github.run_id }}
-
-      # 步骤3：并行下载列表文件，提高效率[7](@ref)
-      - name: Fetch easylist files in parallel
+      # 步骤2：执行抓取和处理命令
+      - name: Fetch and process easylist files
         run: |
-          mkdir -p temp_downloads
-          # 使用并行下载和重试机制，增加容错[7](@ref)
-          parallel --halt now,fail=1 --line-buffer -j 0 "
-          if curl -s -L --retry 3 --max-time 60 {1} -o temp_downloads/{2}; then
-            echo 'Downloaded {1}'
-          else
-            echo 'Failed to download {1}, but continuing...'
-          fi" ::: \
-            "https://easylist.to/easylist/easylist.txt" "easylist.txt" \
-            "https://easylist.to/easylist/fanboy-annoyance.txt" "fanboy-annoyance.txt" \
-            "https://easylist-downloads.adblockplus.org/easylistchina.txt" "easylistchina.txt" \
-            # ... 其他URL，格式为 "URL" "保存的文件名"
+          # 抓取多个 easylist 相关文件并合并
+          curl -s -L \
+            https://easylist.to/easylist/easylist.txt \
+            https://easylist.to/easylist/fanboy-annoyance.txt \
+            https://easylist.to/easylist/fanboy-social.txt \
+            https://easylist-downloads.adblockplus.org/easylistchina.txt \
+            https://easylist-downloads.adblockplus.org/malwaredomains_full.txt \
+            https://github.com/cjx82630/cjxlist/blob/master/cjxlist.txt \
+            https://big.oisd.nl/ \
+            https://anti-ad.net/easylist.txt \
+            https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/pro.plus.txt \
+            > easylist
+          
+          # 去重、过滤符合格式的域名、移除包含 / 的行
+          sort -u easylist | grep -P '^\|\|[^/]*\^$' > easylist.sorted
+          
+          # 移除 || 和 ^ 符号，生成最终的 hosts 格式文件
+          sed 's/\|\|//; s/\^//' < easylist.sorted > easylist.hosts
+          
+          # 删除临时文件
+          rm easylist easylist.sorted
+          
+          # 查看文件行数，验证处理结果（可选）
+          echo "Generated easylist.hosts with $(wc -l < easylist.hosts) lines"
 
-      # 步骤4：合并、处理并生成 hosts 文件
-      - name: Process and generate hosts file
-        run: |
-          # 合并文件，并处理可能的BOM头等字符问题
-          cat temp_downloads/*.txt | sed 's/\xEF\xBB\xBF//g' > combined_list.tmp
-
-          # 使用更精确的规则提取域名：匹配 ||domain.zone^ 格式
-          # 排除注释行、空行和异常行，结果排序去重
-          grep -oE '^\|\|([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\^$' combined_list.tmp | \
-          sed 's/^||//; s/\^$//' | \
-          sort -u > easylist.hosts
-
-          # 验证生成的文件非空
-          if [ ! -s easylist.hosts ]; then
-            echo "Error: Generated easylist.hosts is empty!"
-            exit 1
-          fi
-          echo "Generated $(wc -l < easylist.hosts) entries."
-
-      # 步骤5：提交更改（添加详细变更日志）
+      # 步骤3：提交并推送修改到 master 分支
       - name: Commit and push changes
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # 生成有意义的提交信息
-          LINE_COUNT=$(wc -l < easylist.hosts)
-          git add easylist.hosts
-          if git diff --staged --quiet; then
-            echo "No changes detected."
-          else
-            git commit -m "chore: Update easylist.hosts with $LINE_COUNT entries [skip ci]"
+          # 配置 git 提交信息
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # 检查文件是否有变更
+          if git status --porcelain | grep -q 'easylist.hosts'; then
+            # 提交变更
+            git add easylist.hosts
+            git commit -m "Update easylist.hosts $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            # 推送到 master 分支
             git push origin master
-            echo "Changes pushed successfully."
+            echo "Successfully updated easylist.hosts"
+          else
+            echo "No changes to easylist.hosts, skip commit"
           fi
-
-      # 步骤6：工作流状态通知 (可选)
-      - name: Notify on failure
-        if: failure() # 只有失败时运行
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '⚠️ Daily easylist.hosts update failed. Please check the workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
-            })
