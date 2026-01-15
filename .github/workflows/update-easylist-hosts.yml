@@ -31,16 +31,13 @@ jobs:
             https://easylist-downloads.adblockplus.org/easylistchina.txt \
             https://easylist-downloads.adblockplus.org/malwaredomains_full.txt \
             https://github.com/cjx82630/cjxlist/blob/master/cjxlist.txt \
-            https://big.oisd.nl/ \
-            https://anti-ad.net/easylist.txt \
-            https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/pro.plus.txt \
             > easylist
           
           # 去重、过滤符合格式的域名、移除包含 / 的行
-          sort -u easylist | grep -P '^\|\|[^/]*\^$' > easylist.sorted
+          sort -u easylist | grep ^\|\|.*\^$ | grep -v \/ > easylist.sorted
           
           # 移除 || 和 ^ 符号，生成最终的 hosts 格式文件
-          sed 's/\|\|//; s/\^//' < easylist.sorted > easylist.hosts
+          sed 's/[\|^]//g' < easylist.sorted > easylist.hosts
           
           # 删除临时文件
           rm easylist easylist.sorted
